@@ -32,6 +32,93 @@ class Simple_Coming_Soon_Mode {
         ];
     }
 
+    private function derive_accent_color($attachment_id) {
+        $default = '#2563eb';
+        if (!$attachment_id) {
+            return $default;
+        }
+
+        $path = get_attached_file($attachment_id);
+        if (!$path || !file_exists($path)) {
+            return $default;
+        }
+
+        if (!function_exists('imagecreatefromstring')) {
+            return $default;
+        }
+
+        $data = file_get_contents($path);
+        if ($data === false) {
+            return $default;
+        }
+
+        $img = @imagecreatefromstring($data);
+        if (!$img) {
+            return $default;
+        }
+
+        $width = imagesx($img);
+        $height = imagesy($img);
+        if ($width < 1 || $height < 1) {
+            imagedestroy($img);
+            return $default;
+        }
+
+        $sample = imagecreatetruecolor(16, 16);
+        imagecopyresampled($sample, $img, 0, 0, 0, 0, 16, 16, $width, $height);
+        $r = $g = $b = 0;
+        $count = 0;
+        for ($x = 0; $x < 16; $x++) {
+            for ($y = 0; $y < 16; $y++) {
+                $rgb = imagecolorat($sample, $x, $y);
+                $r += ($rgb >> 16) & 0xFF;
+                $g += ($rgb >> 8) & 0xFF;
+                $b += $rgb & 0xFF;
+                $count++;
+            }
+        }
+        imagedestroy($sample);
+        imagedestroy($img);
+
+        if ($count === 0) {
+            return $default;
+        }
+
+        $r = (int) round($r / $count);
+        $g = (int) round($g / $count);
+        $b = (int) round($b / $count);
+
+        // Boost saturation and brightness for visibility on light UI.
+        $saturationBoost = 1.4;
+        $avg = ($r + $g + $b) / 3;
+        $r = min(255, max(0, (int) round(($r - $avg) * $saturationBoost + $avg)));
+        $g = min(255, max(0, (int) round(($g - $avg) * $saturationBoost + $avg)));
+        $b = min(255, max(0, (int) round(($b - $avg) * $saturationBoost + $avg)));
+
+        $brightnessBoost = 1.08;
+        $r = min(255, (int) round($r * $brightnessBoost));
+        $g = min(255, (int) round($g * $brightnessBoost));
+        $b = min(255, (int) round($b * $brightnessBoost));
+
+        return sprintf('#%02x%02x%02x', $r, $g, $b);
+    }
+
+    private function hex_to_rgb_string($hex) {
+        $hex = ltrim($hex, '#');
+        if (strlen($hex) === 3) {
+            $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+        }
+        if (strlen($hex) !== 6 || !ctype_xdigit($hex)) {
+            return '37,99,235'; // default rgb for #2563eb
+        }
+
+        $int = hexdec($hex);
+        $r = ($int >> 16) & 255;
+        $g = ($int >> 8) & 255;
+        $b = $int & 255;
+        return "{$r},{$g},{$b}";
+    }
+
     private function get_settings() {
         $settings = get_option($this->option_key, []);
         return wp_parse_args($settings, $this->defaults());
@@ -213,6 +300,8 @@ class Simple_Coming_Soon_Mode {
 
         $title = esc_html($settings['title']);
         $message = wpautop(wp_kses_post($settings['message']));
+        $accent = $this->derive_accent_color(!empty($settings['logo_id']) ? absint($settings['logo_id']) : 0);
+        $accent_rgb = $this->hex_to_rgb_string($accent);
 
         ob_start();
         ?>
@@ -224,11 +313,12 @@ class Simple_Coming_Soon_Mode {
             <title><?php echo esc_html($settings['title']); ?></title>
             <style>
                 :root {
-                    --scs-bg: #0f172a;
-                    --scs-card: rgba(255, 255, 255, 0.06);
-                    --scs-text: #e2e8f0;
-                    --scs-accent: #38bdf8;
-                    --scs-muted: #94a3b8;
+                    --scs-bg: #f5f7fb;
+                    --scs-card: #ffffff;
+                    --scs-text: #0f172a;
+                    --scs-accent: <?php echo esc_html($accent); ?>;
+                    --scs-accent-rgb: <?php echo esc_html($accent_rgb); ?>;
+                    --scs-muted: #475569;
                 }
                 * { box-sizing: border-box; }
                 body {
@@ -237,7 +327,11 @@ class Simple_Coming_Soon_Mode {
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    background: radial-gradient(circle at 20% 20%, rgba(56,189,248,0.15), transparent 35%), radial-gradient(circle at 80% 0%, rgba(94,234,212,0.2), transparent 30%), var(--scs-bg);
+                    background:
+                        radial-gradient(circle at 12% 22%, rgba(var(--scs-accent-rgb), 0.28), transparent 32%),
+                        radial-gradient(circle at 85% 8%, rgba(var(--scs-accent-rgb), 0.22), transparent 36%),
+                        radial-gradient(circle at 55% 100%, rgba(var(--scs-accent-rgb), 0.18), transparent 30%),
+                        var(--scs-bg);
                     color: var(--scs-text);
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                     padding: 24px;
@@ -246,12 +340,12 @@ class Simple_Coming_Soon_Mode {
                     width: 100%;
                     max-width: 640px;
                     background: var(--scs-card);
-                    border: 1px solid rgba(255,255,255,0.08);
+                    border: 1px solid #e2e8f0;
                     border-radius: 16px;
-                    padding: 32px;
-                    box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-                    backdrop-filter: blur(8px);
+                    padding: 36px;
+                    box-shadow: 0 30px 60px rgba(15, 23, 42, 0.12);
                     text-align: center;
+                    transition: transform 220ms ease, box-shadow 220ms ease;
                 }
                 .scs-logo {
                     max-width: 180px;
@@ -263,6 +357,7 @@ class Simple_Coming_Soon_Mode {
                     margin: 8px 0 12px;
                     font-size: clamp(28px, 4vw, 34px);
                     letter-spacing: -0.5px;
+                    color: var(--scs-text);
                 }
                 .scs-message {
                     color: var(--scs-muted);
@@ -272,6 +367,16 @@ class Simple_Coming_Soon_Mode {
                 .scs-message p {
                     margin-top: 0;
                     margin-bottom: 12px;
+                }
+                .scs-shell::after {
+                    content: '';
+                    display: block;
+                    width: 80px;
+                    height: 4px;
+                    background: var(--scs-accent);
+                    border-radius: 999px;
+                    margin: 20px auto 0;
+                    opacity: 0.85;
                 }
             </style>
         </head>
