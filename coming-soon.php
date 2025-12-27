@@ -3,7 +3,7 @@
  * Plugin Name: Simple Coming Soon Mode
  * Description: Display a customizable coming soon screen with your logo, headline, and supporting text. Admins can toggle visibility without affecting their own view.
  * Version: 1.0.0
- * Author: Jackson / Codex
+ * Author: Jackson Lee
  * Text Domain: simple-coming-soon-mode
  */
 
@@ -400,9 +400,6 @@ class Simple_Coming_Soon_Mode {
                 body {
                     margin: 0;
                     min-height: 100vh;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
                     background:
                         radial-gradient(circle at 12% 22%, rgba(var(--scs-accent-rgb), 0.28), transparent 32%),
                         radial-gradient(circle at 85% 8%, rgba(var(--scs-accent-rgb), 0.22), transparent 36%),
@@ -410,6 +407,19 @@ class Simple_Coming_Soon_Mode {
                         var(--scs-bg);
                     color: var(--scs-text);
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                }
+                .scs-layout {
+                    min-height: 100vh;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                }
+                .scs-main-wrap {
+                    flex: 1;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 100%;
                     padding: 24px;
                 }
                 .scs-shell {
@@ -514,29 +524,168 @@ class Simple_Coming_Soon_Mode {
                     color: var(--scs-text);
                     font-weight: 600;
                 }
+                .scs-login-cta {
+                    width: 100%;
+                    text-align: center;
+                    margin: 0 0 18px;
+                    color: #94a3b8;
+                }
+                .scs-login-link {
+                    background: transparent;
+                    border: none;
+                    color: inherit;
+                    font-weight: 700;
+                    cursor: pointer;
+                    font-size: 15px;
+                    text-decoration: underline;
+                    padding: 6px 8px;
+                }
+                .scs-login-link:focus-visible {
+                    outline: 2px solid var(--scs-accent);
+                    outline-offset: 3px;
+                }
+                .scs-modal-backdrop {
+                    position: fixed;
+                    inset: 0;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    background: rgba(15, 23, 42, 0.35);
+                    opacity: 0;
+                    visibility: hidden;
+                    pointer-events: none;
+                    transition: opacity 120ms ease, visibility 120ms ease;
+                    padding: 18px;
+                    z-index: 9999;
+                }
+                .scs-modal-backdrop.is-open {
+                    opacity: 1;
+                    visibility: visible;
+                    pointer-events: auto;
+                }
+                .scs-modal {
+                    width: 100%;
+                    max-width: 460px;
+                    background: var(--scs-card);
+                    border-radius: 14px;
+                    padding: 24px;
+                    border: 1px solid #e2e8f0;
+                    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.26);
+                    position: relative;
+                    text-align: left;
+                }
+                .scs-modal h2 {
+                    margin: 0 0 12px;
+                    font-size: 22px;
+                    letter-spacing: -0.3px;
+                }
+                .scs-modal-close {
+                    position: absolute;
+                    top: 10px;
+                    right: 10px;
+                    border: none;
+                    background: transparent;
+                    color: var(--scs-muted);
+                    font-size: 20px;
+                    cursor: pointer;
+                    padding: 6px;
+                    line-height: 1;
+                }
+                .scs-modal-close:focus-visible {
+                    outline: 2px solid var(--scs-accent);
+                    outline-offset: 2px;
+                }
+                .scs-pass-hint {
+                    margin: 0 0 10px;
+                    color: var(--scs-muted);
+                }
             </style>
         </head>
         <body>
-            <main class="scs-shell" aria-label="<?php esc_attr_e('Coming soon message', 'simple-coming-soon-mode'); ?>">
-                <?php if ($logo_url) : ?>
-                    <img class="scs-logo" src="<?php echo esc_url($logo_url); ?>" alt="<?php esc_attr_e('Site logo', 'simple-coming-soon-mode'); ?>" />
-                <?php endif; ?>
-                <h1><?php echo $title; ?></h1>
-                <div class="scs-message"><?php echo $message; ?></div>
-                <?php if (!empty($error_message)) : ?>
-                    <div class="scs-alert"><?php echo esc_html($error_message); ?></div>
-                <?php endif; ?>
+            <div class="scs-layout">
+                <div class="scs-main-wrap">
+                    <main class="scs-shell" aria-label="<?php esc_attr_e('Coming soon message', 'simple-coming-soon-mode'); ?>">
+                        <?php if ($logo_url) : ?>
+                            <img class="scs-logo" src="<?php echo esc_url($logo_url); ?>" alt="<?php esc_attr_e('Site logo', 'simple-coming-soon-mode'); ?>" />
+                        <?php endif; ?>
+                        <h1><?php echo $title; ?></h1>
+                        <div class="scs-message"><?php echo $message; ?></div>
+                    </main>
+                </div>
                 <?php if ($requires_password) : ?>
-                    <form method="post" class="scs-pass-form">
-                        <?php wp_nonce_field('scs_password_entry', 'scs_password_nonce'); ?>
-                        <label class="scs-pass-label" for="scs_mode_password"><?php esc_html_e('Enter the access password to view the site.', 'simple-coming-soon-mode'); ?></label>
-                        <div class="scs-pass-row">
-                            <input type="password" name="scs_mode_password" id="scs_mode_password" placeholder="<?php esc_attr_e('Password', 'simple-coming-soon-mode'); ?>" required />
-                            <button type="submit" name="scs_password_submit" class="scs-pass-button"><?php esc_html_e('Continue', 'simple-coming-soon-mode'); ?></button>
-                        </div>
-                    </form>
+                    <div class="scs-login-cta">
+                        <button type="button" class="scs-login-link" data-scs-open><?php esc_html_e('Login', 'simple-coming-soon-mode'); ?></button>
+                    </div>
                 <?php endif; ?>
-            </main>
+            </div>
+            <?php if ($requires_password) : ?>
+                <div class="scs-modal-backdrop<?php echo $error_message ? ' is-open' : ''; ?>" id="scs-login-modal" aria-hidden="<?php echo $error_message ? 'false' : 'true'; ?>" <?php echo $error_message ? 'data-open-on-load="1"' : ''; ?>>
+                    <div class="scs-modal" role="dialog" aria-labelledby="scs-login-title" aria-modal="true">
+                        <button type="button" class="scs-modal-close" data-scs-close aria-label="<?php esc_attr_e('Close login dialog', 'simple-coming-soon-mode'); ?>">&times;</button>
+                        <h2 id="scs-login-title"><?php esc_html_e('Enter password to continue', 'simple-coming-soon-mode'); ?></h2>
+                        <p class="scs-pass-hint"><?php esc_html_e('Unlock the site with the password provided to you.', 'simple-coming-soon-mode'); ?></p>
+                        <?php if (!empty($error_message)) : ?>
+                            <div class="scs-alert"><?php echo esc_html($error_message); ?></div>
+                        <?php endif; ?>
+                        <form method="post" class="scs-pass-form">
+                            <?php wp_nonce_field('scs_password_entry', 'scs_password_nonce'); ?>
+                            <label class="scs-pass-label" for="scs_mode_password"><?php esc_html_e('Password', 'simple-coming-soon-mode'); ?></label>
+                            <div class="scs-pass-row">
+                                <input type="password" name="scs_mode_password" id="scs_mode_password" placeholder="<?php esc_attr_e('Password', 'simple-coming-soon-mode'); ?>" required />
+                                <button type="submit" name="scs_password_submit" class="scs-pass-button"><?php esc_html_e('Continue', 'simple-coming-soon-mode'); ?></button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                <script>
+                    (() => {
+                        const modal = document.getElementById('scs-login-modal');
+                        const openBtn = document.querySelector('[data-scs-open]');
+                        if (!modal || !openBtn) {
+                            return;
+                        }
+
+                        const closeBtn = modal.querySelector('[data-scs-close]');
+                        const passwordField = modal.querySelector('#scs_mode_password');
+
+                        const toggleModal = (open) => {
+                            modal.classList.toggle('is-open', open);
+                            modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+                            if (open && passwordField) {
+                                setTimeout(() => passwordField.focus(), 30);
+                            }
+                        };
+
+                        openBtn.addEventListener('click', (event) => {
+                            event.preventDefault();
+                            toggleModal(true);
+                        });
+
+                        if (closeBtn) {
+                            closeBtn.addEventListener('click', (event) => {
+                                event.preventDefault();
+                                toggleModal(false);
+                            });
+                        }
+
+                        modal.addEventListener('click', (event) => {
+                            if (event.target === modal) {
+                                toggleModal(false);
+                            }
+                        });
+
+                        document.addEventListener('keydown', (event) => {
+                            if (event.key === 'Escape') {
+                                toggleModal(false);
+                            }
+                        });
+
+                        if (modal.dataset.openOnLoad === '1') {
+                            toggleModal(true);
+                        }
+                    })();
+                </script>
+            <?php endif; ?>
         </body>
         </html>
         <?php
