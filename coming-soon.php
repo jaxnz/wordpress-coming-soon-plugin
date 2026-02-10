@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Simple Coming Soon Mode
  * Description: Display a customizable coming soon screen with your logo, headline, and supporting text. Admins can toggle visibility without affecting their own view.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Jackson Lee
  * Text Domain: simple-coming-soon-mode
  */
@@ -31,6 +31,14 @@ class Simple_Coming_Soon_Mode {
             'message' => 'We are putting the finishing touches on something great. Stay tuned!',
             'logo_id' => 0,
             'password' => '',
+            'contact_form_enabled' => false,
+            'mailgun_domain' => '',
+            'mailgun_api_key' => '',
+            'mailgun_from_name' => get_bloginfo('name'),
+            'mailgun_from_email' => '',
+            'mailgun_to' => sanitize_email(get_option('admin_email')),
+            'mailgun_cc' => '',
+            'mailgun_bcc' => '',
         ];
     }
 
@@ -121,6 +129,26 @@ class Simple_Coming_Soon_Mode {
         return "{$r},{$g},{$b}";
     }
 
+    private function get_contrast_text_color($hex) {
+        $hex = ltrim((string) $hex, '#');
+        if (strlen($hex) === 3) {
+            $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+        }
+
+        if (strlen($hex) !== 6 || !ctype_xdigit($hex)) {
+            return '#ffffff';
+        }
+
+        $int = hexdec($hex);
+        $r = ($int >> 16) & 255;
+        $g = ($int >> 8) & 255;
+        $b = $int & 255;
+
+        // Perceived luminance for contrast selection.
+        $luminance = (0.299 * $r) + (0.587 * $g) + (0.114 * $b);
+        return ($luminance > 170) ? '#0f172a' : '#ffffff';
+    }
+
     private function build_password_token($password) {
         return hash_hmac('sha256', 'scs-mode|' . $password, wp_salt('auth'));
     }
@@ -157,6 +185,45 @@ class Simple_Coming_Soon_Mode {
     private function get_settings() {
         $settings = get_option($this->option_key, []);
         return wp_parse_args($settings, $this->defaults());
+    }
+
+    private function sanitize_mailgun_domain($domain) {
+        $domain = strtolower(sanitize_text_field((string) $domain));
+        $domain = preg_replace('#^https?://#i', '', $domain);
+        $domain = trim($domain, " \t\n\r\0\x0B/");
+        return preg_replace('/[^a-z0-9.\-]/', '', $domain);
+    }
+
+    private function sanitize_email_list($value) {
+        $parts = preg_split('/[\s,;]+/', (string) $value);
+        $valid = [];
+
+        if (!$parts) {
+            return '';
+        }
+
+        foreach ($parts as $entry) {
+            $entry = trim($entry);
+            if ($entry === '') {
+                continue;
+            }
+
+            $email = sanitize_email($entry);
+            if ($email && is_email($email)) {
+                $valid[strtolower($email)] = $email;
+            }
+        }
+
+        return implode(', ', array_values($valid));
+    }
+
+    private function email_list_to_array($value) {
+        $sanitized = $this->sanitize_email_list($value);
+        if ($sanitized === '') {
+            return [];
+        }
+
+        return array_values(array_filter(array_map('trim', explode(',', $sanitized))));
     }
 
     public function add_settings_page() {
@@ -226,6 +293,79 @@ class Simple_Coming_Soon_Mode {
             $this->page_slug,
             'scs_mode_section'
         );
+
+        add_settings_section(
+            'scs_mode_contact_section',
+            __('Contact Form (Mailgun)', 'simple-coming-soon-mode'),
+            function () {
+                echo '<p>' . esc_html__('Enable a contact form on the coming soon page and send submissions using Mailgun.', 'simple-coming-soon-mode') . '</p>';
+            },
+            $this->page_slug
+        );
+
+        add_settings_field(
+            'scs_contact_form_enabled',
+            __('Enable Contact Form', 'simple-coming-soon-mode'),
+            [$this, 'render_contact_enabled_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
+
+        add_settings_field(
+            'scs_mailgun_domain',
+            __('Mailgun Domain', 'simple-coming-soon-mode'),
+            [$this, 'render_mailgun_domain_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
+
+        add_settings_field(
+            'scs_mailgun_api_key',
+            __('Mailgun API Key', 'simple-coming-soon-mode'),
+            [$this, 'render_mailgun_api_key_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
+
+        add_settings_field(
+            'scs_mailgun_from_name',
+            __('From Name', 'simple-coming-soon-mode'),
+            [$this, 'render_mailgun_from_name_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
+
+        add_settings_field(
+            'scs_mailgun_from_email',
+            __('From Email', 'simple-coming-soon-mode'),
+            [$this, 'render_mailgun_from_email_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
+
+        add_settings_field(
+            'scs_mailgun_to',
+            __('To Address(es)', 'simple-coming-soon-mode'),
+            [$this, 'render_mailgun_to_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
+
+        add_settings_field(
+            'scs_mailgun_cc',
+            __('CC Address(es)', 'simple-coming-soon-mode'),
+            [$this, 'render_mailgun_cc_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
+
+        add_settings_field(
+            'scs_mailgun_bcc',
+            __('BCC Address(es)', 'simple-coming-soon-mode'),
+            [$this, 'render_mailgun_bcc_field'],
+            $this->page_slug,
+            'scs_mode_contact_section'
+        );
     }
 
     public function sanitize_settings($input) {
@@ -237,6 +377,14 @@ class Simple_Coming_Soon_Mode {
             'message' => wp_kses_post($input['message'] ?? $defaults['message']),
             'logo_id' => isset($input['logo_id']) ? absint($input['logo_id']) : 0,
             'password' => sanitize_text_field($input['password'] ?? ''),
+            'contact_form_enabled' => !empty($input['contact_form_enabled']),
+            'mailgun_domain' => $this->sanitize_mailgun_domain($input['mailgun_domain'] ?? ''),
+            'mailgun_api_key' => sanitize_text_field($input['mailgun_api_key'] ?? ''),
+            'mailgun_from_name' => sanitize_text_field($input['mailgun_from_name'] ?? ''),
+            'mailgun_from_email' => sanitize_email($input['mailgun_from_email'] ?? ''),
+            'mailgun_to' => $this->sanitize_email_list($input['mailgun_to'] ?? $defaults['mailgun_to']),
+            'mailgun_cc' => $this->sanitize_email_list($input['mailgun_cc'] ?? ''),
+            'mailgun_bcc' => $this->sanitize_email_list($input['mailgun_bcc'] ?? ''),
         ];
     }
 
@@ -303,6 +451,71 @@ class Simple_Coming_Soon_Mode {
         <?php
     }
 
+    public function render_contact_enabled_field() {
+        $settings = $this->get_settings();
+        ?>
+        <label for="scs_contact_form_enabled">
+            <input type="checkbox" name="<?php echo esc_attr($this->option_key); ?>[contact_form_enabled]" id="scs_contact_form_enabled" value="1" <?php checked($settings['contact_form_enabled']); ?> />
+            <?php esc_html_e('Show a contact form on the coming soon page.', 'simple-coming-soon-mode'); ?>
+        </label>
+        <?php
+    }
+
+    public function render_mailgun_domain_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[mailgun_domain]" id="scs_mailgun_domain" value="<?php echo esc_attr($settings['mailgun_domain']); ?>" class="regular-text" placeholder="mg.example.com" />
+        <p class="description"><?php esc_html_e('Mailgun sending domain. Example: mg.example.com', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_mailgun_api_key_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[mailgun_api_key]" id="scs_mailgun_api_key" value="<?php echo esc_attr($settings['mailgun_api_key']); ?>" class="regular-text code" autocomplete="off" />
+        <p class="description"><?php esc_html_e('Mailgun private API key (example: key-xxxxxxxxxxxxxxxxxxxx).', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_mailgun_from_name_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[mailgun_from_name]" id="scs_mailgun_from_name" value="<?php echo esc_attr($settings['mailgun_from_name']); ?>" class="regular-text" />
+        <?php
+    }
+
+    public function render_mailgun_from_email_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="email" name="<?php echo esc_attr($this->option_key); ?>[mailgun_from_email]" id="scs_mailgun_from_email" value="<?php echo esc_attr($settings['mailgun_from_email']); ?>" class="regular-text" placeholder="postmaster@mg.example.com" />
+        <p class="description"><?php esc_html_e('Verified sender email in Mailgun.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_mailgun_to_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[mailgun_to]" id="scs_mailgun_to" value="<?php echo esc_attr($settings['mailgun_to']); ?>" class="regular-text" />
+        <p class="description"><?php esc_html_e('Required. Separate multiple emails with commas.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_mailgun_cc_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[mailgun_cc]" id="scs_mailgun_cc" value="<?php echo esc_attr($settings['mailgun_cc']); ?>" class="regular-text" />
+        <p class="description"><?php esc_html_e('Optional. Separate multiple emails with commas.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_mailgun_bcc_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[mailgun_bcc]" id="scs_mailgun_bcc" value="<?php echo esc_attr($settings['mailgun_bcc']); ?>" class="regular-text" />
+        <p class="description"><?php esc_html_e('Optional. Separate multiple emails with commas.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
     public function enqueue_admin_assets($hook_suffix) {
         if ($hook_suffix !== 'settings_page_' . $this->page_slug) {
             return;
@@ -324,6 +537,175 @@ class Simple_Coming_Soon_Mode {
         return $links;
     }
 
+    private function handle_contact_submission($settings) {
+        $values = [
+            'name' => isset($_POST['scs_contact_name']) ? sanitize_text_field(wp_unslash($_POST['scs_contact_name'])) : '',
+            'email' => isset($_POST['scs_contact_email']) ? sanitize_email(wp_unslash($_POST['scs_contact_email'])) : '',
+            'phone' => isset($_POST['scs_contact_phone']) ? sanitize_text_field(wp_unslash($_POST['scs_contact_phone'])) : '',
+            'message' => isset($_POST['scs_contact_message']) ? sanitize_textarea_field(wp_unslash($_POST['scs_contact_message'])) : '',
+        ];
+        $values['phone'] = preg_replace('/[^0-9+\-\(\)\.\sx]/i', '', $values['phone']);
+        if (function_exists('mb_substr')) {
+            $values['phone'] = mb_substr($values['phone'], 0, 60);
+        } else {
+            $values['phone'] = substr($values['phone'], 0, 60);
+        }
+
+        if (function_exists('mb_substr')) {
+            $values['message'] = mb_substr($values['message'], 0, 5000);
+        } else {
+            $values['message'] = substr($values['message'], 0, 5000);
+        }
+
+        $nonce = isset($_POST['scs_contact_nonce']) ? sanitize_text_field(wp_unslash($_POST['scs_contact_nonce'])) : '';
+        if (!$nonce || !wp_verify_nonce($nonce, 'scs_contact_form_submit')) {
+            return [
+                [
+                    'type' => 'error',
+                    'message' => __('Security check failed. Please refresh the page and try again.', 'simple-coming-soon-mode'),
+                ],
+                $values,
+            ];
+        }
+
+        if ($values['name'] === '' || $values['email'] === '' || $values['message'] === '') {
+            return [
+                [
+                    'type' => 'error',
+                    'message' => __('Please complete all contact form fields.', 'simple-coming-soon-mode'),
+                ],
+                $values,
+            ];
+        }
+
+        if (!is_email($values['email'])) {
+            return [
+                [
+                    'type' => 'error',
+                    'message' => __('Please provide a valid email address.', 'simple-coming-soon-mode'),
+                ],
+                $values,
+            ];
+        }
+
+        $sent = $this->send_contact_email_via_mailgun($settings, $values['name'], $values['email'], $values['phone'], $values['message']);
+        if (is_wp_error($sent)) {
+            return [
+                [
+                    'type' => 'error',
+                    'message' => $sent->get_error_message(),
+                ],
+                $values,
+            ];
+        }
+
+        return [
+            [
+                'type' => 'success',
+                'message' => __('Thanks for reaching out. We will get back to you soon.', 'simple-coming-soon-mode'),
+            ],
+            ['name' => '', 'email' => '', 'phone' => '', 'message' => ''],
+        ];
+    }
+
+    private function send_contact_email_via_mailgun($settings, $name, $email, $phone, $message) {
+        $domain = $this->sanitize_mailgun_domain($settings['mailgun_domain'] ?? '');
+        $api_key = trim((string) ($settings['mailgun_api_key'] ?? ''));
+        $to = $this->email_list_to_array($settings['mailgun_to'] ?? '');
+        $cc = $this->email_list_to_array($settings['mailgun_cc'] ?? '');
+        $bcc = $this->email_list_to_array($settings['mailgun_bcc'] ?? '');
+        $from_name = sanitize_text_field($settings['mailgun_from_name'] ?? get_bloginfo('name'));
+        $from_email = sanitize_email($settings['mailgun_from_email'] ?? '');
+
+        if ($domain === '' || strpos($domain, '.') === false) {
+            return new WP_Error('scs_mailgun_domain_missing', __('Mailgun domain is missing or invalid in plugin settings.', 'simple-coming-soon-mode'));
+        }
+
+        if ($api_key === '') {
+            return new WP_Error('scs_mailgun_key_missing', __('Mailgun API key is missing in plugin settings.', 'simple-coming-soon-mode'));
+        }
+
+        if (empty($to)) {
+            return new WP_Error('scs_mailgun_to_missing', __('At least one recipient email is required in the Mailgun "To" field.', 'simple-coming-soon-mode'));
+        }
+
+        if ($from_name === '') {
+            $from_name = get_bloginfo('name');
+        }
+
+        if (!$from_email || !is_email($from_email)) {
+            $fallback_email = sanitize_email('postmaster@' . $domain);
+            if ($fallback_email && is_email($fallback_email)) {
+                $from_email = $fallback_email;
+            }
+        }
+
+        if (!$from_email || !is_email($from_email)) {
+            return new WP_Error('scs_mailgun_from_missing', __('From email is missing or invalid in plugin settings.', 'simple-coming-soon-mode'));
+        }
+
+        $subject = sprintf(
+            __('New coming soon contact from %s', 'simple-coming-soon-mode'),
+            $name
+        );
+
+        $text_body = implode("\n", [
+            'A new contact form submission was sent from the coming soon page.',
+            '',
+            'Name: ' . $name,
+            'Email: ' . $email,
+            'Phone: ' . ($phone !== '' ? $phone : 'Not provided'),
+            'Site: ' . home_url('/'),
+            'Time: ' . current_time('mysql'),
+            '',
+            'Message:',
+            $message,
+        ]);
+
+        $request_body = [
+            'from' => sprintf('%s <%s>', $from_name, $from_email),
+            'to' => implode(',', $to),
+            'subject' => $subject,
+            'text' => $text_body,
+            'h:Reply-To' => $email,
+        ];
+
+        if (!empty($cc)) {
+            $request_body['cc'] = implode(',', $cc);
+        }
+        if (!empty($bcc)) {
+            $request_body['bcc'] = implode(',', $bcc);
+        }
+
+        $response = wp_remote_post(
+            'https://api.mailgun.net/v3/' . $domain . '/messages',
+            [
+                'timeout' => 20,
+                'headers' => [
+                    'Authorization' => 'Basic ' . base64_encode('api:' . $api_key),
+                ],
+                'body' => $request_body,
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            return new WP_Error('scs_mailgun_request_error', __('Could not reach Mailgun. Please try again later.', 'simple-coming-soon-mode'));
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+        if ($status_code < 200 || $status_code >= 300) {
+            $response_body = wp_remote_retrieve_body($response);
+            $decoded = json_decode($response_body, true);
+            $detail = is_array($decoded) && !empty($decoded['message']) ? sanitize_text_field($decoded['message']) : '';
+            if ($detail !== '') {
+                return new WP_Error('scs_mailgun_send_failed', sprintf(__('Mailgun rejected the message: %s', 'simple-coming-soon-mode'), $detail));
+            }
+            return new WP_Error('scs_mailgun_send_failed', __('Mailgun rejected the message. Please verify your Mailgun settings.', 'simple-coming-soon-mode'));
+        }
+
+        return true;
+    }
+
     public function maybe_render_coming_soon() {
         if (is_admin() || is_feed() || is_preview() || is_customize_preview()) {
             return;
@@ -340,6 +722,8 @@ class Simple_Coming_Soon_Mode {
 
         $requires_password = !empty($settings['password']);
         $error_message = '';
+        $contact_feedback = ['type' => '', 'message' => ''];
+        $contact_values = ['name' => '', 'email' => '', 'phone' => '', 'message' => ''];
 
         if ($requires_password && $this->has_valid_access_cookie($settings['password'])) {
             return;
@@ -362,13 +746,17 @@ class Simple_Coming_Soon_Mode {
             }
         }
 
+        if (!empty($settings['contact_form_enabled']) && isset($_POST['scs_contact_submit'])) {
+            [$contact_feedback, $contact_values] = $this->handle_contact_submission($settings);
+        }
+
         status_header(503);
         nocache_headers();
-        echo $this->render_frontend($settings, $requires_password, $error_message);
+        echo $this->render_frontend($settings, $requires_password, $error_message, $contact_feedback, $contact_values);
         exit;
     }
 
-    private function render_frontend($settings, $requires_password = false, $error_message = '') {
+    private function render_frontend($settings, $requires_password = false, $error_message = '', $contact_feedback = [], $contact_values = []) {
         $logo_url = '';
         if (!empty($settings['logo_id'])) {
             $logo_url = wp_get_attachment_image_url(absint($settings['logo_id']), 'large');
@@ -378,6 +766,14 @@ class Simple_Coming_Soon_Mode {
         $message = wpautop(wp_kses_post($settings['message']));
         $accent = $this->derive_accent_color(!empty($settings['logo_id']) ? absint($settings['logo_id']) : 0);
         $accent_rgb = $this->hex_to_rgb_string($accent);
+        $accent_contrast = $this->get_contrast_text_color($accent);
+        $contact_enabled = !empty($settings['contact_form_enabled']);
+        $contact_feedback_type = isset($contact_feedback['type']) ? sanitize_key($contact_feedback['type']) : '';
+        $contact_feedback_message = isset($contact_feedback['message']) ? sanitize_text_field($contact_feedback['message']) : '';
+        $contact_name = isset($contact_values['name']) ? $contact_values['name'] : '';
+        $contact_email = isset($contact_values['email']) ? $contact_values['email'] : '';
+        $contact_phone = isset($contact_values['phone']) ? $contact_values['phone'] : '';
+        $contact_message = isset($contact_values['message']) ? $contact_values['message'] : '';
 
         ob_start();
         ?>
@@ -394,6 +790,7 @@ class Simple_Coming_Soon_Mode {
                     --scs-text: #0f172a;
                     --scs-accent: <?php echo esc_html($accent); ?>;
                     --scs-accent-rgb: <?php echo esc_html($accent_rgb); ?>;
+                    --scs-accent-contrast: <?php echo esc_html($accent_contrast); ?>;
                     --scs-muted: #475569;
                 }
                 * { box-sizing: border-box; }
@@ -454,6 +851,60 @@ class Simple_Coming_Soon_Mode {
                     margin-top: 0;
                     margin-bottom: 12px;
                 }
+                .scs-contact {
+                    margin-top: 24px;
+                    text-align: left;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 12px;
+                    padding: 16px;
+                    background: #f8fafc;
+                }
+                .scs-contact-title {
+                    margin: 0 0 10px;
+                    font-size: 18px;
+                    letter-spacing: -0.2px;
+                    color: var(--scs-text);
+                }
+                .scs-contact-help {
+                    margin: 0 0 12px;
+                    color: var(--scs-muted);
+                    font-size: 14px;
+                }
+                .scs-contact-form {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                }
+                .scs-contact-label {
+                    font-weight: 600;
+                    color: var(--scs-text);
+                    font-size: 14px;
+                }
+                .scs-contact-input,
+                .scs-contact-textarea {
+                    width: 100%;
+                    padding: 11px 12px;
+                    border: 1px solid #cbd5e1;
+                    border-radius: 10px;
+                    font-size: 15px;
+                    outline: none;
+                    transition: border-color 140ms ease, box-shadow 140ms ease;
+                    background: #fff;
+                }
+                .scs-contact-input:focus,
+                .scs-contact-textarea:focus {
+                    border-color: var(--scs-accent);
+                    box-shadow: 0 0 0 4px rgba(var(--scs-accent-rgb), 0.14);
+                }
+                .scs-contact-textarea {
+                    min-height: 130px;
+                    resize: vertical;
+                    line-height: 1.5;
+                }
+                .scs-contact-button {
+                    align-self: flex-start;
+                    margin-top: 4px;
+                }
                 .scs-shell::after {
                     content: '';
                     display: block;
@@ -497,12 +948,12 @@ class Simple_Coming_Soon_Mode {
                 }
                 .scs-pass-button {
                     background: var(--scs-accent);
-                    color: #fff;
-                    border: none;
+                    color: var(--scs-accent-contrast);
+                    border: 1px solid rgba(15, 23, 42, 0.14);
                     border-radius: 10px;
                     padding: 12px 18px;
                     font-size: 16px;
-                    font-weight: 600;
+                    font-weight: 700;
                     cursor: pointer;
                     box-shadow: 0 12px 30px rgba(var(--scs-accent-rgb), 0.28);
                     transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
@@ -523,6 +974,16 @@ class Simple_Coming_Soon_Mode {
                     border: 1px solid rgba(var(--scs-accent-rgb), 0.22);
                     color: var(--scs-text);
                     font-weight: 600;
+                }
+                .scs-alert.scs-alert--error {
+                    background: rgba(220, 38, 38, 0.1);
+                    border-color: rgba(220, 38, 38, 0.26);
+                    color: #7f1d1d;
+                }
+                .scs-alert.scs-alert--success {
+                    background: rgba(22, 163, 74, 0.12);
+                    border-color: rgba(22, 163, 74, 0.26);
+                    color: #14532d;
                 }
                 .scs-login-cta {
                     width: 100%;
@@ -599,6 +1060,16 @@ class Simple_Coming_Soon_Mode {
                     margin: 0 0 10px;
                     color: var(--scs-muted);
                 }
+                @media (max-width: 640px) {
+                    .scs-shell {
+                        padding: 24px;
+                    }
+                    .scs-contact-button {
+                        width: 100%;
+                        justify-content: center;
+                        text-align: center;
+                    }
+                }
             </style>
         </head>
         <body>
@@ -610,6 +1081,32 @@ class Simple_Coming_Soon_Mode {
                         <?php endif; ?>
                         <h1><?php echo $title; ?></h1>
                         <div class="scs-message"><?php echo $message; ?></div>
+                        <?php if ($contact_enabled) : ?>
+                            <section class="scs-contact" aria-label="<?php esc_attr_e('Contact form', 'simple-coming-soon-mode'); ?>">
+                                <h2 class="scs-contact-title"><?php esc_html_e('Contact Us', 'simple-coming-soon-mode'); ?></h2>
+                                <p class="scs-contact-help"><?php esc_html_e('Have a question? Send a message and we will follow up.', 'simple-coming-soon-mode'); ?></p>
+                                <?php if ($contact_feedback_message !== '') : ?>
+                                    <?php $alert_class = ($contact_feedback_type === 'success') ? 'scs-alert--success' : 'scs-alert--error'; ?>
+                                    <div class="scs-alert <?php echo esc_attr($alert_class); ?>"><?php echo esc_html($contact_feedback_message); ?></div>
+                                <?php endif; ?>
+                                <form method="post" class="scs-contact-form">
+                                    <?php wp_nonce_field('scs_contact_form_submit', 'scs_contact_nonce'); ?>
+                                    <label class="scs-contact-label" for="scs_contact_name"><?php esc_html_e('Name', 'simple-coming-soon-mode'); ?></label>
+                                    <input class="scs-contact-input" type="text" id="scs_contact_name" name="scs_contact_name" value="<?php echo esc_attr($contact_name); ?>" required />
+
+                                    <label class="scs-contact-label" for="scs_contact_email"><?php esc_html_e('Email', 'simple-coming-soon-mode'); ?></label>
+                                    <input class="scs-contact-input" type="email" id="scs_contact_email" name="scs_contact_email" value="<?php echo esc_attr($contact_email); ?>" required />
+
+                                    <label class="scs-contact-label" for="scs_contact_phone"><?php esc_html_e('Phone (Optional)', 'simple-coming-soon-mode'); ?></label>
+                                    <input class="scs-contact-input" type="tel" id="scs_contact_phone" name="scs_contact_phone" value="<?php echo esc_attr($contact_phone); ?>" />
+
+                                    <label class="scs-contact-label" for="scs_contact_message"><?php esc_html_e('Message', 'simple-coming-soon-mode'); ?></label>
+                                    <textarea class="scs-contact-textarea" id="scs_contact_message" name="scs_contact_message" required><?php echo esc_textarea($contact_message); ?></textarea>
+
+                                    <button type="submit" name="scs_contact_submit" class="scs-pass-button scs-contact-button"><?php esc_html_e('Send Message', 'simple-coming-soon-mode'); ?></button>
+                                </form>
+                            </section>
+                        <?php endif; ?>
                     </main>
                 </div>
                 <?php if ($requires_password) : ?>

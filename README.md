@@ -6,6 +6,8 @@ Custom coming soon screen you can toggle on/off, including logo, headline, and s
 - Toggle coming soon mode while letting admins view the live site.
 - Upload/select a logo from the media library.
 - Set a headline and rich text message (links/paragraphs supported).
+- Optional contact form on the coming soon page.
+- Mailgun delivery support for contact submissions, including `To`, `CC`, and `BCC` recipients.
 - Lightweight inline front-end styling; no dependency on your theme.
 
 ## Installation
@@ -16,4 +18,9 @@ Custom coming soon screen you can toggle on/off, including logo, headline, and s
 ## Usage
 1. Go to `Settings > Coming Soon Mode`.
 2. Toggle **Enable Coming Soon**, choose a logo, add your headline and message.
-3. Save changes. Visitors see the coming soon page; admins can still browse the site normally.
+3. (Optional) Enable **Contact Form** and configure Mailgun:
+   - Mailgun Domain (example: `mg.example.com`)
+   - Mailgun API Key (`key-...`)
+   - From Name / From Email
+   - To / CC / BCC recipients (comma-separated)
+4. Save changes. Visitors see the coming soon page; admins can still browse the site normally.
