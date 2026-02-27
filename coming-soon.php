@@ -39,6 +39,12 @@ class Simple_Coming_Soon_Mode {
             'mailgun_to' => sanitize_email(get_option('admin_email')),
             'mailgun_cc' => '',
             'mailgun_bcc' => '',
+            'turnstile_enabled' => false,
+            'turnstile_site_key' => '',
+            'turnstile_secret_key' => '',
+            'seo_allow_indexing' => false,
+            'seo_meta_title' => '',
+            'seo_meta_description' => '',
         ];
     }
 
@@ -226,6 +232,119 @@ class Simple_Coming_Soon_Mode {
         return array_values(array_filter(array_map('trim', explode(',', $sanitized))));
     }
 
+    private function trim_plain_text($value, $max_length) {
+        $value = preg_replace('/\s+/', ' ', trim((string) $value));
+        if ($value === '') {
+            return '';
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($value, 0, $max_length);
+        }
+
+        return substr($value, 0, $max_length);
+    }
+
+    private function build_contact_form_timestamp_signature($timestamp) {
+        return hash_hmac('sha256', 'scs-contact-ts|' . (int) $timestamp, wp_salt('nonce'));
+    }
+
+    private function get_request_ip() {
+        $ip = isset($_SERVER['REMOTE_ADDR']) ? wp_unslash($_SERVER['REMOTE_ADDR']) : '';
+        $ip = trim((string) $ip);
+        if ($ip === '') {
+            return '';
+        }
+
+        return preg_replace('/[^0-9a-fA-F:\.,]/', '', $ip);
+    }
+
+    private function is_turnstile_enabled($settings) {
+        return !empty($settings['turnstile_enabled'])
+            && !empty($settings['turnstile_site_key'])
+            && !empty($settings['turnstile_secret_key']);
+    }
+
+    private function verify_turnstile_response($settings) {
+        $token = isset($_POST['cf-turnstile-response']) ? sanitize_text_field(wp_unslash($_POST['cf-turnstile-response'])) : '';
+        if ($token === '') {
+            return new WP_Error('scs_turnstile_missing', __('Please complete the spam protection check.', 'simple-coming-soon-mode'));
+        }
+
+        $body = [
+            'secret' => sanitize_text_field($settings['turnstile_secret_key'] ?? ''),
+            'response' => $token,
+        ];
+
+        $ip = $this->get_request_ip();
+        if ($ip !== '') {
+            $body['remoteip'] = $ip;
+        }
+
+        $response = wp_remote_post(
+            'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+            [
+                'timeout' => 10,
+                'body' => $body,
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            return new WP_Error('scs_turnstile_request_failed', __('Spam protection verification is temporarily unavailable. Please try again later.', 'simple-coming-soon-mode'));
+        }
+
+        $decoded = json_decode(wp_remote_retrieve_body($response), true);
+        if (!is_array($decoded) || empty($decoded['success'])) {
+            return new WP_Error('scs_turnstile_failed', __('Spam protection verification failed. Please try again.', 'simple-coming-soon-mode'));
+        }
+
+        return true;
+    }
+
+    private function check_contact_rate_limit() {
+        $ip = $this->get_request_ip();
+        if ($ip === '') {
+            return true;
+        }
+
+        $key = 'scs_contact_rate_' . md5($ip);
+        $attempts = (int) get_transient($key);
+        $max_attempts = 5;
+
+        if ($attempts >= $max_attempts) {
+            return new WP_Error('scs_contact_rate_limited', __('Too many messages were submitted from this connection. Please wait a while and try again.', 'simple-coming-soon-mode'));
+        }
+
+        set_transient($key, $attempts + 1, HOUR_IN_SECONDS);
+        return true;
+    }
+
+    private function validate_contact_spam_controls() {
+        $honeypot = isset($_POST['scs_contact_website']) ? trim((string) wp_unslash($_POST['scs_contact_website'])) : '';
+        if ($honeypot !== '') {
+            return new WP_Error('scs_contact_honeypot', __('We could not submit your message. Please try again.', 'simple-coming-soon-mode'));
+        }
+
+        $timestamp = isset($_POST['scs_contact_form_ts']) ? absint($_POST['scs_contact_form_ts']) : 0;
+        $signature = isset($_POST['scs_contact_form_sig']) ? sanitize_text_field(wp_unslash($_POST['scs_contact_form_sig'])) : '';
+        $expected_signature = $timestamp ? $this->build_contact_form_timestamp_signature($timestamp) : '';
+
+        if (!$timestamp || !$signature || !hash_equals($expected_signature, $signature)) {
+            return new WP_Error('scs_contact_timestamp_invalid', __('Security check failed. Please refresh the page and try again.', 'simple-coming-soon-mode'));
+        }
+
+        $age = time() - $timestamp;
+        if ($age < 3) {
+            return new WP_Error('scs_contact_too_fast', __('Please wait a moment and try submitting again.', 'simple-coming-soon-mode'));
+        }
+
+        if ($age > DAY_IN_SECONDS) {
+            return new WP_Error('scs_contact_form_expired', __('This form has expired. Please refresh the page and try again.', 'simple-coming-soon-mode'));
+        }
+
+        return true;
+    }
+
     public function add_settings_page() {
         add_options_page(
             __('Coming Soon Mode', 'simple-coming-soon-mode'),
@@ -366,6 +485,72 @@ class Simple_Coming_Soon_Mode {
             $this->page_slug,
             'scs_mode_contact_section'
         );
+
+        add_settings_section(
+            'scs_mode_spam_section',
+            __('Spam Protection', 'simple-coming-soon-mode'),
+            function () {
+                echo '<p>' . esc_html__('Use built-in protections (honeypot, timing, rate limiting) and optionally enable Cloudflare Turnstile for stronger bot prevention on the contact form.', 'simple-coming-soon-mode') . '</p>';
+            },
+            $this->page_slug
+        );
+
+        add_settings_field(
+            'scs_turnstile_enabled',
+            __('Enable Turnstile', 'simple-coming-soon-mode'),
+            [$this, 'render_turnstile_enabled_field'],
+            $this->page_slug,
+            'scs_mode_spam_section'
+        );
+
+        add_settings_field(
+            'scs_turnstile_site_key',
+            __('Turnstile Site Key', 'simple-coming-soon-mode'),
+            [$this, 'render_turnstile_site_key_field'],
+            $this->page_slug,
+            'scs_mode_spam_section'
+        );
+
+        add_settings_field(
+            'scs_turnstile_secret_key',
+            __('Turnstile Secret Key', 'simple-coming-soon-mode'),
+            [$this, 'render_turnstile_secret_key_field'],
+            $this->page_slug,
+            'scs_mode_spam_section'
+        );
+
+        add_settings_section(
+            'scs_mode_seo_section',
+            __('SEO & Crawling', 'simple-coming-soon-mode'),
+            function () {
+                echo '<p>' . esc_html__('Configure metadata for the coming soon page. Enable indexing to serve HTTP 200 so search engines can index the page content.', 'simple-coming-soon-mode') . '</p>';
+            },
+            $this->page_slug
+        );
+
+        add_settings_field(
+            'scs_seo_allow_indexing',
+            __('Allow Search Indexing', 'simple-coming-soon-mode'),
+            [$this, 'render_seo_allow_indexing_field'],
+            $this->page_slug,
+            'scs_mode_seo_section'
+        );
+
+        add_settings_field(
+            'scs_seo_meta_title',
+            __('SEO Title', 'simple-coming-soon-mode'),
+            [$this, 'render_seo_meta_title_field'],
+            $this->page_slug,
+            'scs_mode_seo_section'
+        );
+
+        add_settings_field(
+            'scs_seo_meta_description',
+            __('SEO Description', 'simple-coming-soon-mode'),
+            [$this, 'render_seo_meta_description_field'],
+            $this->page_slug,
+            'scs_mode_seo_section'
+        );
     }
 
     public function sanitize_settings($input) {
@@ -385,6 +570,12 @@ class Simple_Coming_Soon_Mode {
             'mailgun_to' => $this->sanitize_email_list($input['mailgun_to'] ?? $defaults['mailgun_to']),
             'mailgun_cc' => $this->sanitize_email_list($input['mailgun_cc'] ?? ''),
             'mailgun_bcc' => $this->sanitize_email_list($input['mailgun_bcc'] ?? ''),
+            'turnstile_enabled' => !empty($input['turnstile_enabled']),
+            'turnstile_site_key' => sanitize_text_field($input['turnstile_site_key'] ?? ''),
+            'turnstile_secret_key' => sanitize_text_field($input['turnstile_secret_key'] ?? ''),
+            'seo_allow_indexing' => !empty($input['seo_allow_indexing']),
+            'seo_meta_title' => $this->trim_plain_text(sanitize_text_field($input['seo_meta_title'] ?? ''), 160),
+            'seo_meta_description' => $this->trim_plain_text(sanitize_textarea_field($input['seo_meta_description'] ?? ''), 320),
         ];
     }
 
@@ -516,6 +707,60 @@ class Simple_Coming_Soon_Mode {
         <?php
     }
 
+    public function render_turnstile_enabled_field() {
+        $settings = $this->get_settings();
+        ?>
+        <label for="scs_turnstile_enabled">
+            <input type="checkbox" name="<?php echo esc_attr($this->option_key); ?>[turnstile_enabled]" id="scs_turnstile_enabled" value="1" <?php checked($settings['turnstile_enabled']); ?> />
+            <?php esc_html_e('Require Cloudflare Turnstile on the coming soon contact form.', 'simple-coming-soon-mode'); ?>
+        </label>
+        <p class="description"><?php esc_html_e('Optional. Built-in spam protection is always active; Turnstile adds stronger bot filtering.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_turnstile_site_key_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[turnstile_site_key]" id="scs_turnstile_site_key" value="<?php echo esc_attr($settings['turnstile_site_key']); ?>" class="regular-text code" autocomplete="off" />
+        <p class="description"><?php esc_html_e('Cloudflare Turnstile Site Key. Create one in Cloudflare Dashboard > Turnstile > Add Site.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_turnstile_secret_key_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="password" name="<?php echo esc_attr($this->option_key); ?>[turnstile_secret_key]" id="scs_turnstile_secret_key" value="<?php echo esc_attr($settings['turnstile_secret_key']); ?>" class="regular-text code" autocomplete="off" />
+        <p class="description"><?php esc_html_e('Cloudflare Turnstile Secret Key (server-side key). Paste it here and save to enable verification.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_seo_allow_indexing_field() {
+        $settings = $this->get_settings();
+        ?>
+        <label for="scs_seo_allow_indexing">
+            <input type="checkbox" name="<?php echo esc_attr($this->option_key); ?>[seo_allow_indexing]" id="scs_seo_allow_indexing" value="1" <?php checked($settings['seo_allow_indexing']); ?> />
+            <?php esc_html_e('Serve the coming soon page as HTTP 200 and allow search engines to index it.', 'simple-coming-soon-mode'); ?>
+        </label>
+        <p class="description"><?php esc_html_e('Disabled (default) keeps HTTP 503 for maintenance mode and outputs noindex. Enable only if you want the coming soon page itself to rank/index.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_seo_meta_title_field() {
+        $settings = $this->get_settings();
+        ?>
+        <input type="text" name="<?php echo esc_attr($this->option_key); ?>[seo_meta_title]" id="scs_seo_meta_title" value="<?php echo esc_attr($settings['seo_meta_title']); ?>" class="regular-text" />
+        <p class="description"><?php esc_html_e('Optional. Falls back to the coming soon headline plus site name.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
+    public function render_seo_meta_description_field() {
+        $settings = $this->get_settings();
+        ?>
+        <textarea name="<?php echo esc_attr($this->option_key); ?>[seo_meta_description]" id="scs_seo_meta_description" rows="3" class="large-text"><?php echo esc_textarea($settings['seo_meta_description']); ?></textarea>
+        <p class="description"><?php esc_html_e('Optional. Short summary used for search snippets and social previews. Falls back to your supporting text.', 'simple-coming-soon-mode'); ?></p>
+        <?php
+    }
+
     public function enqueue_admin_assets($hook_suffix) {
         if ($hook_suffix !== 'settings_page_' . $this->page_slug) {
             return;
@@ -568,6 +813,17 @@ class Simple_Coming_Soon_Mode {
             ];
         }
 
+        $spam_check = $this->validate_contact_spam_controls();
+        if (is_wp_error($spam_check)) {
+            return [
+                [
+                    'type' => 'error',
+                    'message' => $spam_check->get_error_message(),
+                ],
+                $values,
+            ];
+        }
+
         if ($values['name'] === '' || $values['email'] === '' || $values['message'] === '') {
             return [
                 [
@@ -583,6 +839,30 @@ class Simple_Coming_Soon_Mode {
                 [
                     'type' => 'error',
                     'message' => __('Please provide a valid email address.', 'simple-coming-soon-mode'),
+                ],
+                $values,
+            ];
+        }
+
+        if ($this->is_turnstile_enabled($settings)) {
+            $turnstile = $this->verify_turnstile_response($settings);
+            if (is_wp_error($turnstile)) {
+                return [
+                    [
+                        'type' => 'error',
+                        'message' => $turnstile->get_error_message(),
+                    ],
+                    $values,
+                ];
+            }
+        }
+
+        $rate_limit = $this->check_contact_rate_limit();
+        if (is_wp_error($rate_limit)) {
+            return [
+                [
+                    'type' => 'error',
+                    'message' => $rate_limit->get_error_message(),
                 ],
                 $values,
             ];
@@ -750,7 +1030,12 @@ class Simple_Coming_Soon_Mode {
             [$contact_feedback, $contact_values] = $this->handle_contact_submission($settings);
         }
 
-        status_header(503);
+        if (!empty($settings['seo_allow_indexing'])) {
+            status_header(200);
+        } else {
+            status_header(503);
+            header('Retry-After: 3600');
+        }
         nocache_headers();
         echo $this->render_frontend($settings, $requires_password, $error_message, $contact_feedback, $contact_values);
         exit;
@@ -774,6 +1059,36 @@ class Simple_Coming_Soon_Mode {
         $contact_email = isset($contact_values['email']) ? $contact_values['email'] : '';
         $contact_phone = isset($contact_values['phone']) ? $contact_values['phone'] : '';
         $contact_message = isset($contact_values['message']) ? $contact_values['message'] : '';
+        $contact_form_timestamp = time();
+        $contact_form_signature = $this->build_contact_form_timestamp_signature($contact_form_timestamp);
+        $turnstile_enabled = $contact_enabled && $this->is_turnstile_enabled($settings);
+        $turnstile_site_key = $turnstile_enabled ? sanitize_text_field($settings['turnstile_site_key']) : '';
+        $site_name = $this->trim_plain_text(wp_strip_all_tags(get_bloginfo('name')), 120);
+        $site_url = home_url('/');
+        $seo_title_text = $this->trim_plain_text($settings['seo_meta_title'] ?? '', 160);
+        if ($seo_title_text === '') {
+            $seo_title_text = $this->trim_plain_text(wp_strip_all_tags(($settings['title'] ?? '') . ' | ' . get_bloginfo('name')), 160);
+        }
+        $seo_description_text = $this->trim_plain_text($settings['seo_meta_description'] ?? '', 320);
+        if ($seo_description_text === '') {
+            $seo_description_text = $this->trim_plain_text(wp_strip_all_tags($settings['message'] ?? ''), 320);
+        }
+        $robots_content = !empty($settings['seo_allow_indexing']) ? 'index,follow,max-image-preview:large' : 'noindex,nofollow,noarchive';
+        $schema = [
+            '@context' => 'https://schema.org',
+            '@type' => 'WebPage',
+            'name' => $seo_title_text !== '' ? $seo_title_text : $site_name,
+            'url' => $site_url,
+            'description' => $seo_description_text,
+            'isPartOf' => [
+                '@type' => 'WebSite',
+                'name' => $site_name,
+                'url' => $site_url,
+            ],
+        ];
+        if ($logo_url) {
+            $schema['primaryImageOfPage'] = esc_url_raw($logo_url);
+        }
 
         ob_start();
         ?>
@@ -782,7 +1097,34 @@ class Simple_Coming_Soon_Mode {
         <head>
             <meta charset="<?php bloginfo('charset'); ?>">
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title><?php echo esc_html($settings['title']); ?></title>
+            <title><?php echo esc_html($seo_title_text !== '' ? $seo_title_text : $settings['title']); ?></title>
+            <?php if ($seo_description_text !== '') : ?>
+                <meta name="description" content="<?php echo esc_attr($seo_description_text); ?>" />
+            <?php endif; ?>
+            <meta name="robots" content="<?php echo esc_attr($robots_content); ?>" />
+            <link rel="canonical" href="<?php echo esc_url($site_url); ?>" />
+            <meta property="og:type" content="website" />
+            <meta property="og:url" content="<?php echo esc_url($site_url); ?>" />
+            <meta property="og:site_name" content="<?php echo esc_attr($site_name); ?>" />
+            <meta property="og:title" content="<?php echo esc_attr($seo_title_text !== '' ? $seo_title_text : $settings['title']); ?>" />
+            <?php if ($seo_description_text !== '') : ?>
+                <meta property="og:description" content="<?php echo esc_attr($seo_description_text); ?>" />
+            <?php endif; ?>
+            <?php if ($logo_url) : ?>
+                <meta property="og:image" content="<?php echo esc_url($logo_url); ?>" />
+            <?php endif; ?>
+            <meta name="twitter:card" content="<?php echo esc_attr($logo_url ? 'summary_large_image' : 'summary'); ?>" />
+            <meta name="twitter:title" content="<?php echo esc_attr($seo_title_text !== '' ? $seo_title_text : $settings['title']); ?>" />
+            <?php if ($seo_description_text !== '') : ?>
+                <meta name="twitter:description" content="<?php echo esc_attr($seo_description_text); ?>" />
+            <?php endif; ?>
+            <?php if ($logo_url) : ?>
+                <meta name="twitter:image" content="<?php echo esc_url($logo_url); ?>" />
+            <?php endif; ?>
+            <script type="application/ld+json"><?php echo wp_json_encode($schema); ?></script>
+            <?php if ($turnstile_enabled) : ?>
+                <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+            <?php endif; ?>
             <style>
                 :root {
                     --scs-bg: #f5f7fb;
@@ -871,9 +1213,21 @@ class Simple_Coming_Soon_Mode {
                     font-size: 14px;
                 }
                 .scs-contact-form {
+                    position: relative;
                     display: flex;
                     flex-direction: column;
                     gap: 10px;
+                }
+                .scs-contact-honeypot {
+                    position: absolute;
+                    left: -10000px;
+                    top: auto;
+                    width: 1px;
+                    height: 1px;
+                    overflow: hidden;
+                }
+                .scs-turnstile-wrap {
+                    margin-top: 2px;
                 }
                 .scs-contact-label {
                     font-weight: 600;
@@ -1091,6 +1445,12 @@ class Simple_Coming_Soon_Mode {
                                 <?php endif; ?>
                                 <form method="post" class="scs-contact-form">
                                     <?php wp_nonce_field('scs_contact_form_submit', 'scs_contact_nonce'); ?>
+                                    <input type="hidden" name="scs_contact_form_ts" value="<?php echo esc_attr($contact_form_timestamp); ?>" />
+                                    <input type="hidden" name="scs_contact_form_sig" value="<?php echo esc_attr($contact_form_signature); ?>" />
+                                    <div class="scs-contact-honeypot" aria-hidden="true">
+                                        <label for="scs_contact_website"><?php esc_html_e('Website', 'simple-coming-soon-mode'); ?></label>
+                                        <input type="text" id="scs_contact_website" name="scs_contact_website" value="" tabindex="-1" autocomplete="off" />
+                                    </div>
                                     <label class="scs-contact-label" for="scs_contact_name"><?php esc_html_e('Name', 'simple-coming-soon-mode'); ?></label>
                                     <input class="scs-contact-input" type="text" id="scs_contact_name" name="scs_contact_name" value="<?php echo esc_attr($contact_name); ?>" required />
 
@@ -1102,6 +1462,12 @@ class Simple_Coming_Soon_Mode {
 
                                     <label class="scs-contact-label" for="scs_contact_message"><?php esc_html_e('Message', 'simple-coming-soon-mode'); ?></label>
                                     <textarea class="scs-contact-textarea" id="scs_contact_message" name="scs_contact_message" required><?php echo esc_textarea($contact_message); ?></textarea>
+
+                                    <?php if ($turnstile_enabled) : ?>
+                                        <div class="scs-turnstile-wrap">
+                                            <div class="cf-turnstile" data-sitekey="<?php echo esc_attr($turnstile_site_key); ?>"></div>
+                                        </div>
+                                    <?php endif; ?>
 
                                     <button type="submit" name="scs_contact_submit" class="scs-pass-button scs-contact-button"><?php esc_html_e('Send Message', 'simple-coming-soon-mode'); ?></button>
                                 </form>

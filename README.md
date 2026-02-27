@@ -7,7 +7,11 @@ Custom coming soon screen you can toggle on/off, including logo, headline, and s
 - Upload/select a logo from the media library.
 - Set a headline and rich text message (links/paragraphs supported).
 - Optional contact form on the coming soon page.
+- Built-in spam protection for contact submissions (honeypot, timing checks, rate limiting).
+- Optional Cloudflare Turnstile support for stronger bot protection.
 - Mailgun delivery support for contact submissions, including `To`, `CC`, and `BCC` recipients.
+- SEO metadata support for the coming soon page (title, description, Open Graph/Twitter tags, JSON-LD).
+- Optional indexable mode (HTTP `200`) so search engines can index the coming soon page when desired.
 - Lightweight inline front-end styling; no dependency on your theme.
 
 ## Installation
@@ -23,4 +27,10 @@ Custom coming soon screen you can toggle on/off, including logo, headline, and s
    - Mailgun API Key (`key-...`)
    - From Name / From Email
    - To / CC / BCC recipients (comma-separated)
-4. Save changes. Visitors see the coming soon page; admins can still browse the site normally.
+4. (Optional) Configure **Spam Protection**:
+   - Built-in protections are enabled automatically for the contact form.
+   - For stronger filtering, create a Cloudflare Turnstile widget (`Cloudflare Dashboard > Turnstile > Add Site`) and paste the **Site Key** and **Secret Key** into the plugin settings, then enable Turnstile.
+5. (Optional) Configure **SEO & Crawling**:
+   - Add an SEO title/description for search and social previews.
+   - Enable **Allow Search Indexing** if you want Google to index the coming soon page itself (this switches the response from HTTP `503` to HTTP `200`).
+6. Save changes. Visitors see the coming soon page; admins can still browse the site normally.
