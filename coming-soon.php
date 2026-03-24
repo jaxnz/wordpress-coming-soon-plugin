@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Simple Coming Soon Mode
  * Description: Display a customizable coming soon screen with your logo, headline, and supporting text. Admins can toggle visibility without affecting their own view.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Jackson Lee
  * Text Domain: simple-coming-soon-mode
  */
@@ -20,6 +20,8 @@ class Simple_Coming_Soon_Mode {
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_init', [$this, 'register_settings']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
+        add_action('admin_post_scs_mode_export_settings', [$this, 'handle_settings_export']);
+        add_action('admin_post_scs_mode_import_settings', [$this, 'handle_settings_import']);
         add_action('template_redirect', [$this, 'maybe_render_coming_soon']);
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), [$this, 'add_settings_link']);
     }
@@ -191,6 +193,50 @@ class Simple_Coming_Soon_Mode {
     private function get_settings() {
         $settings = get_option($this->option_key, []);
         return wp_parse_args($settings, $this->defaults());
+    }
+
+    private function get_settings_page_url($args = []) {
+        $url = admin_url('options-general.php?page=' . $this->page_slug);
+
+        if (!empty($args)) {
+            $url = add_query_arg($args, $url);
+        }
+
+        return $url;
+    }
+
+    private function redirect_to_settings_page($args = []) {
+        wp_safe_redirect($this->get_settings_page_url($args));
+        exit;
+    }
+
+    private function get_import_notice() {
+        $notice = isset($_GET['scs_notice']) ? sanitize_key(wp_unslash($_GET['scs_notice'])) : '';
+
+        if ($notice === 'imported') {
+            return [
+                'class' => 'notice notice-success is-dismissible',
+                'message' => __('Settings imported successfully.', 'simple-coming-soon-mode'),
+            ];
+        }
+
+        if ($notice !== 'import_failed') {
+            return null;
+        }
+
+        $reason = isset($_GET['scs_reason']) ? sanitize_key(wp_unslash($_GET['scs_reason'])) : '';
+        $messages = [
+            'missing_file' => __('Choose a JSON export file to import.', 'simple-coming-soon-mode'),
+            'upload_error' => __('The import file could not be uploaded. Please try again.', 'simple-coming-soon-mode'),
+            'read_error' => __('The import file could not be read.', 'simple-coming-soon-mode'),
+            'invalid_json' => __('The import file is not valid JSON.', 'simple-coming-soon-mode'),
+            'invalid_payload' => __('The import file does not contain valid plugin settings.', 'simple-coming-soon-mode'),
+        ];
+
+        return [
+            'class' => 'notice notice-error',
+            'message' => $messages[$reason] ?? __('The settings import failed.', 'simple-coming-soon-mode'),
+        ];
     }
 
     private function sanitize_mailgun_domain($domain) {
@@ -579,16 +625,118 @@ class Simple_Coming_Soon_Mode {
         ];
     }
 
+    public function handle_settings_export() {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('You are not allowed to export these settings.', 'simple-coming-soon-mode'));
+        }
+
+        check_admin_referer('scs_export_settings');
+
+        $payload = [
+            'plugin' => 'simple-coming-soon-mode',
+            'version' => '1.2.0',
+            'option_key' => $this->option_key,
+            'exported_at' => gmdate('c'),
+            'settings' => $this->get_settings(),
+        ];
+
+        $json = wp_json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json) || $json === '') {
+            wp_die(esc_html__('The settings export could not be generated.', 'simple-coming-soon-mode'));
+        }
+
+        nocache_headers();
+        header('Content-Type: application/json; charset=' . get_option('blog_charset'));
+        header('Content-Disposition: attachment; filename="simple-coming-soon-mode-settings-' . gmdate('Y-m-d-His') . '.json"');
+        header('X-Content-Type-Options: nosniff');
+        echo $json;
+        exit;
+    }
+
+    public function handle_settings_import() {
+        if (!current_user_can('manage_options')) {
+            wp_die(esc_html__('You are not allowed to import these settings.', 'simple-coming-soon-mode'));
+        }
+
+        check_admin_referer('scs_import_settings');
+
+        if (empty($_FILES['scs_import_file']['tmp_name'])) {
+            $this->redirect_to_settings_page([
+                'scs_notice' => 'import_failed',
+                'scs_reason' => 'missing_file',
+            ]);
+        }
+
+        $file = $_FILES['scs_import_file'];
+        if (!empty($file['error'])) {
+            $this->redirect_to_settings_page([
+                'scs_notice' => 'import_failed',
+                'scs_reason' => 'upload_error',
+            ]);
+        }
+
+        $contents = file_get_contents($file['tmp_name']);
+        if (!is_string($contents) || $contents === '') {
+            $this->redirect_to_settings_page([
+                'scs_notice' => 'import_failed',
+                'scs_reason' => 'read_error',
+            ]);
+        }
+
+        $decoded = json_decode($contents, true);
+        if (!is_array($decoded)) {
+            $this->redirect_to_settings_page([
+                'scs_notice' => 'import_failed',
+                'scs_reason' => 'invalid_json',
+            ]);
+        }
+
+        $settings = isset($decoded['settings']) && is_array($decoded['settings']) ? $decoded['settings'] : $decoded;
+        if (!is_array($settings) || empty($settings)) {
+            $this->redirect_to_settings_page([
+                'scs_notice' => 'import_failed',
+                'scs_reason' => 'invalid_payload',
+            ]);
+        }
+
+        update_option($this->option_key, $this->sanitize_settings($settings));
+
+        $this->redirect_to_settings_page([
+            'scs_notice' => 'imported',
+        ]);
+    }
+
     public function render_settings_page() {
+        $notice = $this->get_import_notice();
         ?>
         <div class="wrap">
             <h1><?php esc_html_e('Coming Soon Mode', 'simple-coming-soon-mode'); ?></h1>
+            <?php if ($notice) : ?>
+                <div class="<?php echo esc_attr($notice['class']); ?>">
+                    <p><?php echo esc_html($notice['message']); ?></p>
+                </div>
+            <?php endif; ?>
             <form method="post" action="options.php">
                 <?php
                 settings_fields('scs_mode_settings_group');
                 do_settings_sections($this->page_slug);
                 submit_button(__('Save Settings', 'simple-coming-soon-mode'));
                 ?>
+            </form>
+            <hr />
+            <h2><?php esc_html_e('Export & Import', 'simple-coming-soon-mode'); ?></h2>
+            <p><?php esc_html_e('Export the full plugin configuration to a JSON file, then import it later to restore these settings, including passwords and API keys.', 'simple-coming-soon-mode'); ?></p>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin: 0 0 20px;">
+                <input type="hidden" name="action" value="scs_mode_export_settings" />
+                <?php wp_nonce_field('scs_export_settings'); ?>
+                <?php submit_button(__('Export Settings', 'simple-coming-soon-mode'), 'secondary', 'submit', false); ?>
+            </form>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
+                <input type="hidden" name="action" value="scs_mode_import_settings" />
+                <?php wp_nonce_field('scs_import_settings'); ?>
+                <input type="file" name="scs_import_file" accept=".json,application/json" />
+                <?php submit_button(__('Import Settings', 'simple-coming-soon-mode'), 'secondary', 'submit', false); ?>
+                <p class="description"><?php esc_html_e('Importing replaces the current plugin settings with the values from the selected export file.', 'simple-coming-soon-mode'); ?></p>
             </form>
         </div>
         <?php

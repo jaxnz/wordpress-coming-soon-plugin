@@ -12,6 +12,7 @@ Custom coming soon screen you can toggle on/off, including logo, headline, and s
 - Mailgun delivery support for contact submissions, including `To`, `CC`, and `BCC` recipients.
 - SEO metadata support for the coming soon page (title, description, Open Graph/Twitter tags, JSON-LD).
 - Optional indexable mode (HTTP `200`) so search engines can index the coming soon page when desired.
+- Export and import the plugin's saved settings as JSON, including passwords and API keys.
 - Lightweight inline front-end styling; no dependency on your theme.
 
 ## Installation
@@ -33,4 +34,10 @@ Custom coming soon screen you can toggle on/off, including logo, headline, and s
 5. (Optional) Configure **SEO & Crawling**:
    - Add an SEO title/description for search and social previews.
    - Enable **Allow Search Indexing** if you want Google to index the coming soon page itself (this switches the response from HTTP `503` to HTTP `200`).
-6. Save changes. Visitors see the coming soon page; admins can still browse the site normally.
+6. (Optional) Use **Export & Import** to download the plugin settings as JSON or restore them later.
+7. Save changes. Visitors see the coming soon page; admins can still browse the site normally.
+
+## Export / Import Notes
+- The export contains the plugin's full saved settings, including the access password, Mailgun API key, and Turnstile keys.
+- Importing replaces the current plugin settings with the values from the export file.
+- The selected logo is stored as a WordPress attachment ID. If you import onto a different site, the logo will only restore if that attachment ID exists there too.
